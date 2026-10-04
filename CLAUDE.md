@@ -12,18 +12,18 @@ This is a monorepo with two main areas:
 
 - `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
 - `docs/` — Project documentation, architecture diagrams, and planning.
-- `nextjs-project/` (Next.js) — not yet initialized
+- `next-frontend/` (Next.js) — Fase 02 frontend implementada; interface de vídeos fora da Fase 03
 
 ## Architecture (C4 Container Diagram)
 
 See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
 - **Frontend** (Next.js) → calls API via REST, streams from Object Storage
-- **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
+- **API** (Nest.js) → business rules, auth, reads/writes DB, signs direct storage uploads, publishes jobs to queue, sends emails
 - **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
 - **Database** (PostgreSQL) → users, channels, videos, comments, likes
 - **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Message Queue** (BullMQ + Redis) → video processing job queue
 - **Email Service** (SMTP) → account confirmation and password recovery
 
 ## Docker Networking
@@ -39,11 +39,22 @@ This applies to all environment variables, configuration files, and code that re
 
 ## Working Principles
 
-- **Single Responsibility:** each module, service, and function should have a clear, focused responsibility.
+- **Single Responsibility:** each module, service, and function should have a clear, focused responsibility. Re-evaluate adherence at every step — when a module starts owning logic or entities that are not its own (e.g., a service creating an entity from another domain), extract it immediately into the proper module instead of deferring to a later corrective task.
 - **Type Safety:** Strict TypeScript usage across all layers.
 - **Testing:** Strong emphasis on pyramid testing at all levels to ensure reliability and maintainability.
 - **Code Quality:** Use ESLint and Prettier for consistent code style. Code reviews should focus on readability, maintainability, and adherence to best practices.
 - **Documentation:** Comprehensive docs for architecture, setup, and troubleshooting in `docs/`.
+
+## Definition of Done (Technical)
+
+A change is only considered complete when **all** of the following pass:
+
+1. The relevant test suite passes (unit + integration + e2e affected by the change).
+2. The full test suite passes before finishing the task.
+3. TypeScript compiles cleanly: `npx tsc --noEmit` exits with code 0. Compilation errors must never be left as debt for future tasks.
+4. Lint passes: `npm run lint`.
+
+If any of these fails, the task is not done — fix the underlying issue before declaring completion.
 
 
 ## Git Conventions
@@ -94,3 +105,11 @@ Skip documentation lookup only for trivial operations such as:
 
 If a library is involved and there is uncertainty, documentation lookup is mandatory.
 If the documentation returned does not match the installed version, flag the discrepancy before proceeding.
+
+## Phase 03 — Videos
+
+The backend module is `nestjs-project/src/videos/`. A private S3-compatible bucket in MinIO stores source videos and JPEG thumbnails. Redis/BullMQ queue `video-processing` carries `video.process` jobs containing `videoId`; the separate `video-worker` Compose service processes them with ffprobe/FFmpeg and updates `videos.status` from `draft` to `processing` to `ready` or `error`.
+
+Upload is direct S3 multipart: `POST /videos` creates a draft and upload session, `POST /videos/:id/upload-parts` returns signed URLs, and `POST /videos/:id/complete` validates the uploaded parts and queues processing. The API never accepts video bytes. An owner can abort with `DELETE /videos/:id/upload` and read progress at `GET /videos/:id/status`. Ready videos are public at `GET /videos/:id`, `/stream` (HTTP Range), `/download` and `/thumbnail`. IDs are UUIDs and serve as stable unique URLs. Full contracts and tests are in `docs/phases/phase-03-videos/`.
+
+`nestjs-project/compose.yaml` now starts the API, PostgreSQL, Mailpit, Redis, MinIO, bucket initializer and video worker. All app commands and tests run inside `nestjs-api`. `AGENTS.md` and `.agents/skills/` port the Claude workflow for Codex; `.codex/config.toml` configures Context7 and PostgreSQL MCP for future Codex sessions.
