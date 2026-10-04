@@ -12,18 +12,18 @@ This is a monorepo with two main areas:
 
 - `nestjs-project/` — Backend API (NestJS 11, TypeScript, Express). Contains modules for users, channels, videos, comments, etc.
 - `docs/` — Project documentation, architecture diagrams, and planning.
-- `next-frontend/` (Next.js) — not yet initialized
+- `next-frontend/` (Next.js) — Fase 02 frontend implementada; interface de vídeos fora da Fase 03
 
 ## Architecture (C4 Container Diagram)
 
 See `docs/diagrams/software-arch.mermaid` for the full diagram. Key containers:
 
 - **Frontend** (Next.js) → calls API via REST, streams from Object Storage
-- **API** (Nest.js) → business rules, auth, reads/writes DB, uploads to storage, publishes jobs to queue, sends emails
+- **API** (Nest.js) → business rules, auth, reads/writes DB, signs direct storage uploads, publishes jobs to queue, sends emails
 - **Video Worker** (FFmpeg) → consumes jobs from queue, processes videos, updates DB and storage
 - **Database** (PostgreSQL) → users, channels, videos, comments, likes
 - **Object Storage** (S3/MinIO) → video files and thumbnails
-- **Message Queue** (TBD) → video processing job queue
+- **Message Queue** (BullMQ + Redis) → video processing job queue
 - **Email Service** (SMTP) → account confirmation and password recovery
 
 ## Docker Networking
@@ -105,3 +105,11 @@ Skip documentation lookup only for trivial operations such as:
 
 If a library is involved and there is uncertainty, documentation lookup is mandatory.
 If the documentation returned does not match the installed version, flag the discrepancy before proceeding.
+
+## Phase 03 — Videos
+
+The backend module is `nestjs-project/src/videos/`. A private S3-compatible bucket in MinIO stores source videos and JPEG thumbnails. Redis/BullMQ queue `video-processing` carries `video.process` jobs containing `videoId`; the separate `video-worker` Compose service processes them with ffprobe/FFmpeg and updates `videos.status` from `draft` to `processing` to `ready` or `error`.
+
+Upload is direct S3 multipart: `POST /videos` creates a draft and upload session, `POST /videos/:id/upload-parts` returns signed URLs, and `POST /videos/:id/complete` validates the uploaded parts and queues processing. The API never accepts video bytes. An owner can abort with `DELETE /videos/:id/upload` and read progress at `GET /videos/:id/status`. Ready videos are public at `GET /videos/:id`, `/stream` (HTTP Range), `/download` and `/thumbnail`. IDs are UUIDs and serve as stable unique URLs. Full contracts and tests are in `docs/phases/phase-03-videos/`.
+
+`nestjs-project/compose.yaml` now starts the API, PostgreSQL, Mailpit, Redis, MinIO, bucket initializer and video worker. All app commands and tests run inside `nestjs-api`. `AGENTS.md` and `.agents/skills/` port the Claude workflow for Codex; `.codex/config.toml` configures Context7 and PostgreSQL MCP for future Codex sessions.

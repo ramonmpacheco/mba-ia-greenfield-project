@@ -2,9 +2,9 @@
 
 ## Environment Startup Verification
 
-**Default behavior:** starting the environment means starting **only infrastructure services** (database, mail, etc.) — **never** start the NestJS application server unless the user explicitly asks to run/serve the project (e.g., "rode o projeto", "suba o servidor", "run the app").
+`docker compose up -d --build` starts `nestjs-api`, `video-worker` and all infrastructure. It is the supported way to run the backend on another machine.
 
-After starting infrastructure, always confirm the containers are up before proceeding:
+After starting the stack, confirm containers are up:
 
 ```bash
 docker compose ps   # all services must show status "running"
@@ -14,26 +14,25 @@ Then verify each infrastructure service is actually ready to accept connections 
 
 - **PostgreSQL:** `docker compose exec db pg_isready -U streamtube` — expect `accepting connections`
 
-Only start the NestJS dev server (`npm run start:dev`) when the user **explicitly** asks to run the application — never as part of "start the environment".
-
 ## Development Environment
 
 This project runs inside Docker. Always use the container for development:
 
 ```bash
-# Start containers
-docker compose up -d
+# Build images and start the API, worker and infrastructure
+docker compose up -d --build
 
-# Install dependencies (first time only)
-docker compose exec nestjs-api npm install
-
-# Run the dev server (watch mode)
-docker compose exec nestjs-api npm run start:dev
+# Create/update the schema
+docker compose exec nestjs-api npm run migration:run
 ```
 
 Services:
 - `nestjs-api` — NestJS API, port `3000`
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `redis` — BullMQ queue persistence
+- `minio` — S3-compatible storage, ports `9000` and `9001`
+- `minio-init` — one-shot private bucket/CORS initialization
+- `video-worker` — FFmpeg/ffprobe processor
 
 All verification and teardown commands run on the **host machine**:
 
@@ -148,6 +147,15 @@ NestJS with standard module structure. Source lives in `src/`, compiled output i
 
 - Each domain feature gets its own module (e.g., `UsersModule`, `VideosModule`) registered in `AppModule`
 - Controllers handle HTTP routing; Services hold business logic; both are scoped to their module
+
+### Videos (Phase 03)
+
+- `src/videos/videos.module.ts` registers S3 storage, BullMQ producer and video HTTP routes. `src/videos/video-worker.ts` boots a Nest application context with the BullMQ processor; no HTTP server runs in the worker.
+- MinIO (`minio`) stores source and thumbnail objects; `minio-init` creates the private bucket and CORS rule. Redis (`redis`) persists queue data. Both are Compose services.
+- `POST /videos` creates a draft and multipart session. `POST /videos/:id/upload-parts` signs part URLs; the client sends bytes to MinIO. `POST /videos/:id/complete` validates S3 parts and enqueues processing. The owner may use `DELETE /videos/:id/upload` and `GET /videos/:id/status`.
+- `GET /videos/:id`, `/stream`, `/download` and `/thumbnail` expose ready videos publicly. Streaming accepts one HTTP byte range and returns `206`; invalid ranges return `416`.
+- The worker streams the source object to a temporary file, extracts ffprobe metadata and duration, generates a JPEG frame via FFmpeg, and sets status `ready`. Final processing failures set `error`.
+- Migrations include `1791111600000-CreateVideos.ts`. Run `docker compose exec nestjs-api npm run migration:run` after the first `up`.
 
 ## Code Conventions
 
